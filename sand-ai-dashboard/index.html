@@ -1,0 +1,263 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#eee3d2" />
+  <meta name="description" content="Upload an image, ask a question, and get a clear 100-word AI answer." />
+  <title>Sand AI — Image analyser</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --sand-50: #fbf8f2;
+      --sand-100: #f3ecdf;
+      --sand-200: #e8dcc9;
+      --sand-300: #d7c4a8;
+      --sand-500: #a88a65;
+      --sand-700: #735c42;
+      --ink: #40362b;
+      --muted: #827563;
+      --line: #e9dfd0;
+      --shadow: 0 24px 70px rgba(77, 58, 35, .09);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      color: var(--ink);
+      background:
+        radial-gradient(ellipse at 8% 0%, rgba(255,255,255,.85), transparent 38rem),
+        linear-gradient(135deg, #e9decd, #f3ecdf 50%, #e4d5bf);
+      padding: 28px 18px 36px;
+    }
+    button, input, textarea { font: inherit; }
+    .shell { width: min(100%, 760px); margin: 0 auto; }
+    .topbar { display:flex; align-items:center; justify-content:space-between; margin: 2px 2px 24px; }
+    .brand { display:flex; gap:11px; align-items:center; font-size:13px; font-weight:800; letter-spacing:.19em; }
+    .brand-mark { display:grid; place-items:center; width:38px; height:38px; border-radius:13px; background:#dfceb3; color:#5c4934; box-shadow: inset 0 1px rgba(255,255,255,.7); }
+    .brand-mark svg { width:20px; height:20px; }
+    .status { color:#6e7358; background:#e6eadb; border:1px solid #d8dfc8; padding:7px 11px; border-radius:999px; font-size:10px; font-weight:800; letter-spacing:.12em; }
+    .panel { background:rgba(255,252,246,.94); border:1px solid rgba(255,255,255,.82); border-radius:28px; box-shadow:var(--shadow); padding:clamp(22px, 5vw, 42px); overflow:hidden; }
+    .eyebrow { color:var(--sand-700); font-size:11px; font-weight:800; letter-spacing:.2em; text-transform:uppercase; }
+    h1 { font-family: Georgia, "Times New Roman", serif; font-size:clamp(42px, 8vw, 68px); line-height:.98; letter-spacing:-.055em; font-weight:500; margin:17px 0 15px; }
+    h1 span { color:var(--sand-500); font-style:italic; }
+    .intro { color:var(--muted); line-height:1.7; font-size:15px; max-width:520px; margin:0 0 30px; }
+    .step { display:flex; align-items:center; justify-content:space-between; gap:14px; margin:0 0 11px; }
+    .step-title { font-size:13px; font-weight:800; letter-spacing:.025em; }
+    .step-no { color:#a7957d; font-size:10px; font-weight:800; letter-spacing:.16em; }
+    .dropzone { position:relative; display:flex; flex-direction:column; align-items:center; justify-content:center; text-align:center; min-height:212px; padding:24px; border:1.5px dashed #cbb99d; border-radius:19px; background:linear-gradient(145deg, #f8f3e9, #f0e7d9); cursor:pointer; transition:.2s ease; }
+    .dropzone:hover, .dropzone.dragover { border-color:#96764f; background:#f2e8d8; transform:translateY(-1px); }
+    .drop-icon { display:grid; place-items:center; width:48px; height:48px; border-radius:16px; color:#806543; background:#e7d8c0; margin-bottom:13px; }
+    .drop-icon svg { width:23px; height:23px; }
+    .drop-main { font-size:14px; font-weight:750; }
+    .drop-sub { color:#91816c; font-size:12px; margin-top:7px; line-height:1.5; }
+    .file-input { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; }
+    .preview-wrap { display:none; width:100%; margin-top:15px; }
+    .preview-wrap.visible { display:block; }
+    .preview { display:block; max-height:250px; max-width:100%; object-fit:contain; margin:0 auto; border-radius:12px; box-shadow:0 8px 24px rgba(65,48,28,.12); }
+    .file-meta { display:flex; align-items:center; justify-content:center; gap:8px; margin-top:10px; color:#74634d; font-size:11px; }
+    .remove-file { border:0; background:transparent; color:#956b4a; font-size:11px; text-decoration:underline; cursor:pointer; }
+    .query-area { margin-top:25px; }
+    textarea { display:block; width:100%; min-height:116px; resize:vertical; border:1px solid #e3d8c8; border-radius:15px; padding:15px 16px; background:#fffdf9; color:var(--ink); outline:none; font-size:14px; line-height:1.6; transition:border .2s, box-shadow .2s; }
+    textarea::placeholder { color:#b1a38f; }
+    textarea:focus { border-color:#b69a75; box-shadow:0 0 0 3px rgba(182,154,117,.15); }
+    .hint { margin:8px 2px 0; color:#978974; font-size:11px; }
+    .promise { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:17px 18px; margin-top:24px; background:#4b3b2c; border-radius:17px; color:#f6eddf; }
+    .promise-label { font-size:12px; font-weight:750; }
+    .promise-sub { color:#d2c0a7; font-size:10px; margin-top:5px; }
+    .promise-count { white-space:nowrap; font-family:Georgia,serif; font-size:25px; letter-spacing:-.04em; color:#f1dfc4; }
+    .submit { display:flex; justify-content:center; align-items:center; gap:10px; width:100%; min-height:56px; margin-top:15px; border:0; border-radius:15px; background:#8a6b49; color:white; font-size:14px; font-weight:800; letter-spacing:.01em; cursor:pointer; box-shadow:0 10px 22px rgba(115,85,52,.2); transition:transform .18s, background .18s; }
+    .submit:hover { background:#775a3b; transform:translateY(-1px); }
+    .submit:disabled { opacity:.65; cursor:wait; transform:none; }
+    .submit svg { width:17px; height:17px; }
+    .spinner { width:17px; height:17px; border:2px solid rgba(255,255,255,.35); border-top-color:white; border-radius:50%; animation:spin .8s linear infinite; }
+    @keyframes spin { to { transform:rotate(360deg); } }
+    .message { display:none; margin-top:14px; padding:12px 14px; border-radius:12px; font-size:12px; line-height:1.5; }
+    .message.show { display:block; }
+    .message.error { color:#7d3e32; background:#f8e8e2; border:1px solid #efd2c7; }
+    .message.info { color:#67563f; background:#f2ecdf; border:1px solid #e6dac6; }
+    .result { display:none; margin-top:26px; border:1px solid #e6d9c6; background:#fcf9f3; border-radius:18px; overflow:hidden; }
+    .result.visible { display:block; }
+    .result-head { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:16px 18px; border-bottom:1px solid #eee5d8; }
+    .result-title { font-size:12px; font-weight:850; letter-spacing:.1em; text-transform:uppercase; }
+    .word-pill { color:#6c604c; background:#eee5d6; border-radius:999px; padding:6px 9px; font-size:10px; font-weight:800; }
+    .answer { padding:19px 20px 16px; font-family:Georgia,serif; font-size:17px; line-height:1.75; white-space:pre-wrap; }
+    .result-foot { display:flex; justify-content:flex-end; padding:0 17px 17px; }
+    .copy { display:inline-flex; align-items:center; gap:7px; border:1px solid #e1d5c4; border-radius:10px; padding:9px 12px; background:#fffdf9; color:#705b40; cursor:pointer; font-size:11px; font-weight:750; }
+    .copy svg { width:14px; height:14px; }
+    .footer { text-align:center; color:#8c7b65; font-size:10px; letter-spacing:.06em; margin:21px 0 0; }
+    .footer strong { color:#6c563a; }
+    @media (max-width:520px) {
+      body { padding:15px 11px 26px; }
+      .topbar { margin:0 4px 15px; }
+      .panel { border-radius:23px; padding:24px 18px; }
+      .intro { font-size:14px; margin-bottom:25px; }
+      .dropzone { min-height:190px; padding:18px; }
+      .promise { padding:15px; }
+      .promise-count { font-size:22px; }
+      .answer { font-size:16px; padding:16px; }
+    }
+    @media (prefers-reduced-motion:reduce) { *, *::before, *::after { animation-duration:.01ms !important; transition-duration:.01ms !important; } }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 18.5 9.5 5l3.2 8 2-4 5.3 9.5H4Z"/><path d="M7.5 18.5h9"/></svg></span>
+        <span>SAND / AI</span>
+      </div>
+      <span class="status">IMAGE STUDIO</span>
+    </header>
+
+    <section class="panel">
+      <div class="eyebrow">A little clarity, in every picture</div>
+      <h1>See an image.<br><span>Ask anything.</span></h1>
+      <p class="intro">Add a picture and tell us what you want to know. Get a thoughtful, easy-to-read AI answer in exactly 100 words.</p>
+
+      <form id="analyser-form">
+        <div class="step"><label class="step-title" for="image-file">01 — Upload your image</label><span class="step-no">YOUR PHOTO</span></div>
+        <label class="dropzone" id="dropzone" for="image-file">
+          <input class="file-input" id="image-file" type="file" accept="image/png,image/jpeg,image/webp,image/gif" />
+          <span class="drop-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg></span>
+          <span class="drop-main" id="drop-main">Choose an image or drop it here</span>
+          <span class="drop-sub">PNG, JPG, WEBP or GIF · up to 3 MB</span>
+          <span class="preview-wrap" id="preview-wrap">
+            <img class="preview" id="preview" alt="Selected image preview" />
+            <span class="file-meta"><span id="file-name"></span><button class="remove-file" id="remove-file" type="button">Remove</button></span>
+          </span>
+        </label>
+
+        <div class="query-area">
+          <div class="step"><label class="step-title" for="question">02 — What would you like to know?</label><span class="step-no">YOUR QUESTION</span></div>
+          <textarea id="question" maxlength="1000" placeholder="Ask anything about your image… e.g. What is happening in this picture?">Describe and analyse this image.</textarea>
+          <p class="hint">Be specific or keep it simple. Your question guides the analysis.</p>
+        </div>
+
+        <div class="promise">
+          <div><div class="promise-label">Your answer, simplified.</div><div class="promise-sub">Clear, concise and focused on your question.</div></div>
+          <div class="promise-count">100 words</div>
+        </div>
+        <button class="submit" id="analyse-button" type="submit"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3 1.9 5.8L20 11l-6.1 2.2L12 19l-2-5.8L4 11l6-2.2L12 3Z"/><path d="m19 16 .9 2.1L22 19l-2.1.9L19 22l-.9-2.1L16 19l2.1-.9L19 16Z"/></svg> Analyse image</button>
+        <div class="message" id="message" role="status" aria-live="polite"></div>
+      </form>
+
+      <section class="result" id="result" aria-live="polite">
+        <div class="result-head"><span class="result-title">Your image insight</span><span class="word-pill" id="word-count">100 / 100 WORDS</span></div>
+        <div class="answer" id="answer"></div>
+        <div class="result-foot"><button class="copy" id="copy-button" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="8" width="13" height="13" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"/></svg> Copy answer</button></div>
+      </section>
+    </section>
+    <footer class="footer"><strong>SAND AI</strong> · A clearer way to understand every image</footer>
+  </main>
+  <script>
+    (() => {
+      const form = document.getElementById('analyser-form');
+      const input = document.getElementById('image-file');
+      const zone = document.getElementById('dropzone');
+      const previewWrap = document.getElementById('preview-wrap');
+      const preview = document.getElementById('preview');
+      const fileName = document.getElementById('file-name');
+      const dropMain = document.getElementById('drop-main');
+      const removeButton = document.getElementById('remove-file');
+      const question = document.getElementById('question');
+      const submit = document.getElementById('analyse-button');
+      const message = document.getElementById('message');
+      const result = document.getElementById('result');
+      const answer = document.getElementById('answer');
+      const wordCount = document.getElementById('word-count');
+      const copyButton = document.getElementById('copy-button');
+      let selectedFile = null;
+      let previewUrl = null;
+      const allowed = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
+
+      function countWords(text) {
+        return (text.trim().match(/[\p{L}\p{N}]+(?:[’'\-][\p{L}\p{N}]+)*/gu) || []).length;
+      }
+      function showMessage(text, kind = 'error') {
+        message.textContent = text;
+        message.className = `message show ${kind}`;
+      }
+      function clearMessage() { message.textContent = ''; message.className = 'message'; }
+      function setFile(file) {
+        clearMessage();
+        if (!file) return;
+        if (!allowed.has(file.type)) return showMessage('Please choose a PNG, JPG, WEBP or GIF image.');
+        if (file.size > 3 * 1024 * 1024) return showMessage('That image is larger than 3 MB. Please choose a smaller file.');
+        selectedFile = file;
+        if (previewUrl) URL.revokeObjectURL(previewUrl);
+        previewUrl = URL.createObjectURL(file);
+        preview.src = previewUrl;
+        fileName.textContent = `${file.name} · ${(file.size / 1024).toFixed(0)} KB`;
+        dropMain.textContent = 'Image ready to analyse';
+        previewWrap.classList.add('visible');
+        result.classList.remove('visible');
+      }
+      function clearFile(event) {
+        if (event) event.preventDefault();
+        selectedFile = null;
+        input.value = '';
+        if (previewUrl) URL.revokeObjectURL(previewUrl);
+        previewUrl = null;
+        preview.removeAttribute('src');
+        previewWrap.classList.remove('visible');
+        dropMain.textContent = 'Choose an image or drop it here';
+        clearMessage();
+      }
+      input.addEventListener('change', () => setFile(input.files && input.files[0]));
+      removeButton.addEventListener('click', clearFile);
+      ['dragenter', 'dragover'].forEach(name => zone.addEventListener(name, event => { event.preventDefault(); zone.classList.add('dragover'); }));
+      ['dragleave', 'drop'].forEach(name => zone.addEventListener(name, event => { event.preventDefault(); zone.classList.remove('dragover'); }));
+      zone.addEventListener('drop', event => { const file = event.dataTransfer.files && event.dataTransfer.files[0]; if (file) setFile(file); });
+
+      function toDataUrl(file) {
+        return new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result);
+          reader.onerror = () => reject(new Error('The image could not be read. Please try another file.'));
+          reader.readAsDataURL(file);
+        });
+      }
+      form.addEventListener('submit', async event => {
+        event.preventDefault();
+        clearMessage();
+        result.classList.remove('visible');
+        if (!selectedFile) return showMessage('Please upload an image first.');
+        const prompt = question.value.trim();
+        if (!prompt) return showMessage('Please enter a question about your image.');
+        submit.disabled = true;
+        submit.innerHTML = '<span class="spinner" aria-hidden="true"></span> Analysing your image…';
+        try {
+          const image = await toDataUrl(selectedFile);
+          const response = await fetch('/api/analyze', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ image, question: prompt })
+          });
+          const data = await response.json().catch(() => ({}));
+          if (!response.ok) throw new Error(data.error || 'Analysis failed. Please try again.');
+          const words = countWords(data.answer || '');
+          if (words !== 100) throw new Error('The response was not exactly 100 words. Please try again.');
+          answer.textContent = data.answer;
+          wordCount.textContent = `${words} / 100 WORDS`;
+          result.classList.add('visible');
+          result.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        } catch (error) {
+          showMessage(error.message || 'Something went wrong. Please try again.');
+        } finally {
+          submit.disabled = false;
+          submit.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3 1.9 5.8L20 11l-6.1 2.2L12 19l-2-5.8L4 11l6-2.2L12 3Z"/><path d="m19 16 .9 2.1L22 19l-2.1.9L19 22l-.9-2.1L16 19l2.1-.9L19 16Z"/></svg> Analyse image';
+        }
+      });
+      copyButton.addEventListener('click', async () => {
+        try {
+          await navigator.clipboard.writeText(answer.textContent);
+          copyButton.textContent = 'Copied';
+          setTimeout(() => { copyButton.textContent = 'Copy answer'; }, 1500);
+        } catch { showMessage('Clipboard access is unavailable in this browser.', 'info'); }
+      });
+    })();
+  </script>
+</body>
+</html>
