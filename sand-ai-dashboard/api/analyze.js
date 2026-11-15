@@ -116,7 +116,7 @@ async function requestGemini({ image, question, previousAnswer }) {
   const match = image.match(/^data:image\/(png|jpeg|webp|gif);base64,(.+)$/);
   if (!match) throw Object.assign(new Error('The uploaded image format is not supported.'), { retryable: false });
 
-  const model = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+  const model = process.env.GEMINI_MODEL || 'gemini-3.8-flash';
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(process.env.GEMINI_API_KEY)}`;
   const response = await fetchWithRetry(url, {
     method: 'POST',
