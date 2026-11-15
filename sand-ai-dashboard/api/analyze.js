@@ -4,10 +4,15 @@
  * Image Q&A handler (Vercel serverless, CommonJS).
  *
  * Environment variables (Vercel -> Project -> Settings -> Environment Variables):
- *   OPENAI_API_KEY, GEMINI_API_KEY   at least one is required
+ *   OPENAI_API_KEY, GEMINI_API_KEY, OPENROUTER_API_KEY, GROQ_API_KEY
+ *                                    at least one is required. Fallback order: OpenAI -> Gemini -> OpenRouter -> Groq
+ *                                    (a provider with no key is simply skipped)
  *   OPENAI_MODEL                     default: gpt-5.4-mini
  *   GEMINI_MODEL                     default: gemini-3.8-flash
  *                                    (if you previously set this to gemini-2.5-flash, update or delete it)
+ *   OPENROUTER_MODEL                 default: openrouter/free   (router that picks a free model; it filters for image support)
+ *   GROQ_MODEL                       default: qwen/qwen3.8-27b  (a vision-capable model on Groq)
+ *   GROQ_REASONING_EFFORT            optional, e.g. none. Only sent if set, because not every model accepts it.
  *   OPENAI_IMAGE_DETAIL              default: auto   (low | auto | high)
  *   OPENAI_REASONING_EFFORT          optional, e.g. minimal/low. Only sent if set, because not every model accepts it.
  *   GEMINI_THINKING_BUDGET           optional number, e.g. 0. Only sent if set, because not every model accepts it.
@@ -29,6 +34,9 @@ const TOTAL_BUDGET_MS = Number(process.env.TOTAL_BUDGET_MS) || 45000;
 const RATE_LIMIT_PER_MIN = Number(process.env.RATE_LIMIT_PER_MIN) || 6;
 const OPENAI_MAX_OUTPUT_TOKENS = 800;
 const GEMINI_MAX_OUTPUT_TOKENS = 1000;
+const OPENROUTER_MAX_OUTPUT_TOKENS = 1000;
+const GROQ_MAX_OUTPUT_TOKENS = 1200;
+const PROVIDER_ORDER = ['OpenAI', 'Gemini', 'OpenRouter', 'Groq'];
 
 const RETRYABLE_KINDS = new Set(['rate_limit', 'server', 'transient', 'timeout']);
 const USER_TEMPORARY_KINDS = new Set(['rate_limit', 'server', 'transient', 'timeout', 'empty']);
@@ -80,7 +88,7 @@ function getInstructions(question, previousAnswer) {
 // Turns an HTTP status + provider message into a category we can act on.
 function classifyHttp(status, text) {
   const t = String(text || '').toLowerCase();
-  if (/insufficient_quota|no credits|credits remaining|billing|exceeded your current quota|per ?day|daily/.test(t)) return 'quota';
+  if (status === 402 || /insufficient_quota|no credits|credits remaining|credit balance|out of credits|insufficient credits|billing|exceeded your current quota|per[ -]?day|daily/.test(t)) return 'quota';
   if (status === 401 || status === 403) return 'auth';
   if (status === 404 || /no longer available|model.*not found|does not exist|decommission|deprecat/.test(t)) return 'model';
   if (status === 429) return 'rate_limit';
@@ -233,25 +241,107 @@ async function requestGemini({ image, question, previousAnswer }, ctx) {
   return text;
 }
 
+// Some reasoning models leave <think>...</think> in the text; remove it before counting words.
+function stripThinking(text) {
+  return String(text || '').replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+}
+
+/*
+ * Generic OpenAI-compatible Chat Completions call, used by OpenRouter and Groq.
+ * The correction pass sends no image (text only).
+ */
+async function requestChatCompletions({ name, baseUrl, apiKey, model, maxTokens, extraBody, extraHeaders }, { image, question, previousAnswer }, ctx) {
+  const content = [{ type: 'text', text: getInstructions(question, previousAnswer) }];
+  if (image) content.push({ type: 'image_url', image_url: { url: image } });
+
+  const response = await fetchWithRetry(`${baseUrl}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+      ...(extraHeaders || {})
+    },
+    body: JSON.stringify({
+      model,
+      max_tokens: maxTokens,
+      messages: [{ role: 'user', content }],
+      ...(extraBody || {})
+    })
+  }, name, ctx.deadline);
+
+  const payload = await response.json().catch(() => ({}));
+
+  // Some gateways (OpenRouter in particular) can report an upstream failure inside a 200 response.
+  if (payload && payload.error && !payload.choices) {
+    const err = typeof payload.error === 'object' ? payload.error : { message: String(payload.error) };
+    const message = err.message || `${name} returned an error.`;
+    const status = Number(err.code) || 502;
+    throw makeError(message, {
+      status,
+      kind: classifyHttp(status, [err.code, err.type, err.status, message].filter(Boolean).join(' ')),
+      provider: name
+    });
+  }
+
+  const raw = payload.choices?.[0]?.message?.content;
+  const text = stripThinking(Array.isArray(raw)
+    ? raw.map((part) => (typeof part === 'string' ? part : part.text || '')).join('\n')
+    : raw);
+
+  if (!text) {
+    const why = payload.choices?.[0]?.finish_reason || 'no text returned';
+    throw makeError(`${name} returned an empty answer (${why}).`, { kind: 'empty', provider: name });
+  }
+  return text;
+}
+
+function requestOpenRouter(input, ctx) {
+  return requestChatCompletions({
+    name: 'OpenRouter',
+    baseUrl: 'https://openrouter.ai/api/v1',
+    apiKey: process.env.OPENROUTER_API_KEY,
+    model: process.env.OPENROUTER_MODEL || 'openrouter/free',
+    maxTokens: OPENROUTER_MAX_OUTPUT_TOKENS
+  }, input, ctx);
+}
+
+function requestGroq(input, ctx) {
+  const extraBody = {};
+  if (process.env.GROQ_REASONING_EFFORT) extraBody.reasoning_effort = process.env.GROQ_REASONING_EFFORT;
+
+  return requestChatCompletions({
+    name: 'Groq',
+    baseUrl: 'https://api.groq.com/openai/v1',
+    apiKey: process.env.GROQ_API_KEY,
+    model: process.env.GROQ_MODEL || 'qwen/qwen3.8-27b',
+    maxTokens: GROQ_MAX_OUTPUT_TOKENS,
+    extraBody
+  }, input, ctx);
+}
+
 const PROVIDERS = {
-  OpenAI: { envKey: 'OPENAI_API_KEY', call: requestOpenAI },
-  Gemini: { envKey: 'GEMINI_API_KEY', call: requestGemini }
+  OpenAI: { keyLabel: 'OPENAI_API_KEY', getKey: () => process.env.OPENAI_API_KEY, call: requestOpenAI },
+  Gemini: { keyLabel: 'GEMINI_API_KEY', getKey: () => process.env.GEMINI_API_KEY, call: requestGemini },
+  OpenRouter: { keyLabel: 'OPENROUTER_API_KEY', getKey: () => process.env.OPENROUTER_API_KEY, call: requestOpenRouter },
+  Groq: { keyLabel: 'GROQ_API_KEY', getKey: () => process.env.GROQ_API_KEY, call: requestGroq }
 };
 
 /*
- * Tries providers in order (the preferred one first) and falls back on ANY failure.
+ * Tries providers in PROVIDER_ORDER (the preferred one first) and falls back on ANY failure.
  * A provider that failed earlier in this same request is skipped, so a provider that is
  * out of credits or has a retired model is not hit again by the correction pass.
  */
 async function requestAI(input, ctx, preferred) {
-  const order = preferred === 'Gemini' ? ['Gemini', 'OpenAI'] : ['OpenAI', 'Gemini'];
+  const order = PROVIDER_ORDER.includes(preferred)
+    ? [preferred, ...PROVIDER_ORDER.filter((n) => n !== preferred)]
+    : PROVIDER_ORDER;
 
   for (const name of order) {
     if (ctx.errors.has(name)) continue;
     const provider = PROVIDERS[name];
 
-    if (!process.env[provider.envKey]) {
-      ctx.errors.set(name, makeError(`${provider.envKey} is not configured.`, { kind: 'config', provider: name }));
+    if (!provider.getKey()) {
+      ctx.errors.set(name, makeError(`${provider.keyLabel} is not configured.`, { kind: 'config', provider: name }));
       continue;
     }
 
