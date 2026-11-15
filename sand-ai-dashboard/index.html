@@ -151,9 +151,40 @@
     </section>
     <footer class="footer"><strong>SAND AI</strong> · A clearer way to understand every image</footer>
   </main>
-  <script src="/client-logging.js"></script>
   <script>
     (() => {
+      // Calls /api/analyze and logs the full error (including the server's debug field) to the console on failure.
+      async function analyzeImage(imageDataUrl, question) {
+        const res = await fetch('/api/analyze', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ image: imageDataUrl, question })
+        });
+
+        // Read as text first so an HTML or plain-text error page does not hide the real problem.
+        const rawText = await res.text();
+        let data;
+        try { data = JSON.parse(rawText); } catch { data = { raw: rawText.slice(0, 500) }; }
+
+        if (!res.ok) {
+          console.groupCollapsed(`/api/analyze failed: ${res.status} ${res.statusText}`);
+          console.error('Error message:', data.error || '(none)');
+          console.error('Debug details:', data.debug || '(none. Is DEBUG_ERRORS=1 set and redeployed?)');
+          console.log('Full response body:', data);
+          console.log('Response headers:', Object.fromEntries(res.headers.entries()));
+          console.groupEnd();
+
+          const err = new Error(data.error || `Request failed (${res.status})`);
+          err.status = res.status;
+          err.debug = data.debug;
+          err.body = data;
+          throw err;
+        }
+
+        console.log(`Answer from ${data.provider} (${data.words} words)`);
+        return data;
+      }
+
       const form = document.getElementById('analyser-form');
       const input = document.getElementById('image-file');
       const zone = document.getElementById('dropzone');
@@ -232,7 +263,7 @@
         submit.innerHTML = '<span class="spinner" aria-hidden="true"></span> Analysing your image…';
         try {
           const image = await toDataUrl(selectedFile);
-          // analyzeImage() is defined in client-logging.js. It throws on failure and logs the full error to the console.
+          // analyzeImage() is defined above. It throws on failure and logs the full error to the console.
           const data = await analyzeImage(image, prompt);
           const words = countWords(data.answer || '');
           if (words !== 100) throw new Error('The response was not exactly 100 words. Please try again.');
