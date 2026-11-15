@@ -1,0 +1,40 @@
+// Drop-in replacement for the fetch call in your page (the one around line 233).
+// It logs the full error, including the server's `debug` field, to the browser console.
+async function analyzeImage(imageDataUrl, question) {
+  const res = await fetch('/api/analyze', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ image: imageDataUrl, question })
+  });
+
+  // Read as text first so an HTML or plain-text error page does not hide the real problem.
+  const rawText = await res.text();
+  let data;
+  try { data = JSON.parse(rawText); } catch { data = { raw: rawText.slice(0, 500) }; }
+
+  if (!res.ok) {
+    console.groupCollapsed(`/api/analyze failed: ${res.status} ${res.statusText}`);
+    console.error('Error message:', data.error || '(none)');
+    console.error('Debug details:', data.debug || '(none. Is DEBUG_ERRORS=1 set and redeployed?)');
+    console.log('Full response body:', data);
+    console.log('Response headers:', Object.fromEntries(res.headers.entries()));
+    console.groupEnd();
+
+    const err = new Error(data.error || `Request failed (${res.status})`);
+    err.status = res.status;
+    err.debug = data.debug;
+    err.body = data;
+    throw err;
+  }
+
+  console.log(`Answer from ${data.provider} (${data.words} words)`);
+  return data;
+}
+
+// Example use:
+// try {
+//   const result = await analyzeImage(imageDataUrl, questionText);
+//   showAnswer(result.answer);
+// } catch (err) {
+//   showError(err.message);   // the console already has the full details
+// }
