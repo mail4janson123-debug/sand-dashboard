@@ -151,6 +151,7 @@
     </section>
     <footer class="footer"><strong>SAND AI</strong> · A clearer way to understand every image</footer>
   </main>
+  <script src="/client-logging.js"></script>
   <script>
     (() => {
       const form = document.getElementById('analyser-form');
@@ -172,8 +173,9 @@
       let previewUrl = null;
       const allowed = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
 
+      // Must match the server: whitespace-separated tokens that contain a letter or digit.
       function countWords(text) {
-        return (text.trim().match(/[\p{L}\p{N}]+(?:[’'\-][\p{L}\p{N}]+)*/gu) || []).length;
+        return String(text || '').trim().split(/\s+/).filter(token => /[\p{L}\p{N}]/u.test(token)).length;
       }
       function showMessage(text, kind = 'error') {
         message.textContent = text;
@@ -230,13 +232,8 @@
         submit.innerHTML = '<span class="spinner" aria-hidden="true"></span> Analysing your image…';
         try {
           const image = await toDataUrl(selectedFile);
-          const response = await fetch('/api/analyze', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ image, question: prompt })
-          });
-          const data = await response.json().catch(() => ({}));
-          if (!response.ok) throw new Error(data.error || 'Analysis failed. Please try again.');
+          // analyzeImage() is defined in client-logging.js. It throws on failure and logs the full error to the console.
+          const data = await analyzeImage(image, prompt);
           const words = countWords(data.answer || '');
           if (words !== 100) throw new Error('The response was not exactly 100 words. Please try again.');
           answer.textContent = data.answer;
