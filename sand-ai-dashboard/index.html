@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="theme-color" content="#eee3d2" />
-  <meta name="description" content="Upload an image, ask a question, and get a clear 100-word AI answer." />
+  <meta name="description" content="Upload an image, ask a question, and get a clear AI answer in under 100 words." />
   <title>Sand AI — Image analyser</title>
   <style>
     :root {
@@ -82,10 +82,16 @@
     .result-head { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:16px 18px; border-bottom:1px solid #eee5d8; }
     .result-title { font-size:12px; font-weight:850; letter-spacing:.1em; text-transform:uppercase; }
     .word-pill { color:#6c604c; background:#eee5d6; border-radius:999px; padding:6px 9px; font-size:10px; font-weight:800; }
+    .word-pill.over { color:#7d3e32; background:#f3dfd3; }
     .answer { padding:19px 20px 16px; font-family:Georgia,serif; font-size:17px; line-height:1.75; white-space:pre-wrap; }
     .result-foot { display:flex; justify-content:flex-end; padding:0 17px 17px; }
     .copy { display:inline-flex; align-items:center; gap:7px; border:1px solid #e1d5c4; border-radius:10px; padding:9px 12px; background:#fffdf9; color:#705b40; cursor:pointer; font-size:11px; font-weight:750; }
     .copy svg { width:14px; height:14px; }
+    .shorten { margin:0 17px 17px; padding:14px 15px; border:1px dashed #d9c9b0; border-radius:13px; background:#f7f1e6; }
+    .shorten-text { margin:0 0 11px; color:#6c604c; font-size:12px; line-height:1.55; }
+    .shorten-actions { display:flex; flex-wrap:wrap; gap:9px; }
+    .claude-link { display:inline-flex; align-items:center; gap:6px; border:1px solid #c9ad8a; border-radius:10px; padding:9px 12px; background:#8a6b49; color:#fff; text-decoration:none; font-size:11px; font-weight:750; }
+    .claude-link:hover { background:#775a3b; }
     .footer { text-align:center; color:#8c7b65; font-size:10px; letter-spacing:.06em; margin:21px 0 0; }
     .footer strong { color:#6c563a; }
     @media (max-width:520px) {
@@ -114,7 +120,7 @@
     <section class="panel">
       <div class="eyebrow">A little clarity, in every picture</div>
       <h1>See an image.<br><span>Ask anything.</span></h1>
-      <p class="intro">Add a picture and tell us what you want to know. Get a thoughtful, easy-to-read AI answer in exactly 100 words.</p>
+      <p class="intro">Add a picture and tell us what you want to know. Get a thoughtful, easy-to-read AI answer in under 100 words.</p>
 
       <form id="analyser-form">
         <div class="step"><label class="step-title" for="image-file">01 — Upload your image</label><span class="step-no">YOUR PHOTO</span></div>
@@ -136,17 +142,24 @@
         </div>
 
         <div class="promise">
-          <div><div class="promise-label">Your answer, simplified.</div><div class="promise-sub">Clear, concise and focused on your question.</div></div>
-          <div class="promise-count">100 words</div>
+          <div><div class="promise-label">Your answer, simplified.</div><div class="promise-sub">Aimed at under 100 words. If it runs long, shorten it with Claude.</div></div>
+          <div class="promise-count">&lt; 100 words</div>
         </div>
         <button class="submit" id="analyse-button" type="submit"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3 1.9 5.8L20 11l-6.1 2.2L12 19l-2-5.8L4 11l6-2.2L12 3Z"/><path d="m19 16 .9 2.1L22 19l-2.1.9L19 22l-.9-2.1L16 19l2.1-.9L19 16Z"/></svg> Analyse image</button>
         <div class="message" id="message" role="status" aria-live="polite"></div>
       </form>
 
       <section class="result" id="result" aria-live="polite">
-        <div class="result-head"><span class="result-title">Your image insight</span><span class="word-pill" id="word-count">100 / 100 WORDS</span></div>
+        <div class="result-head"><span class="result-title">Your image insight</span><span class="word-pill" id="word-count">0 WORDS</span></div>
         <div class="answer" id="answer"></div>
         <div class="result-foot"><button class="copy" id="copy-button" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="8" width="13" height="13" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"/></svg> Copy answer</button></div>
+        <div class="shorten" id="shorten">
+          <p class="shorten-text" id="shorten-text"></p>
+          <div class="shorten-actions">
+            <button class="copy" id="copy-prompt-button" type="button">Copy prompt for Claude</button>
+            <a class="claude-link" id="claude-link" href="https://claude.ai/new" target="_blank" rel="noopener noreferrer">Open Claude chat &#8599;</a>
+          </div>
+        </div>
       </section>
     </section>
     <footer class="footer"><strong>SAND AI</strong> · A clearer way to understand every image</footer>
@@ -200,6 +213,9 @@
       const answer = document.getElementById('answer');
       const wordCount = document.getElementById('word-count');
       const copyButton = document.getElementById('copy-button');
+      const shortenText = document.getElementById('shorten-text');
+      const copyPromptButton = document.getElementById('copy-prompt-button');
+      const WORD_LIMIT = 100;
       let selectedFile = null;
       let previewUrl = null;
       const allowed = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
@@ -289,10 +305,15 @@
           const image = await toDataUrl(selectedFile);
           // analyzeImage() is defined above. It throws on failure and logs the full error to the console.
           const data = await analyzeImage(image, prompt);
-          const words = countWords(data.answer || '');
-          if (words !== 100) throw new Error('The response was not exactly 100 words. Please try again.');
+          // The first answer is shown as it is, even if it runs over the limit.
+          const words = Number.isFinite(data.words) ? data.words : countWords(data.answer || '');
+          const over = words >= WORD_LIMIT;
           answer.textContent = data.answer;
-          wordCount.textContent = `${words} / 100 WORDS`;
+          wordCount.textContent = over ? `${words} WORDS · OVER ${WORD_LIMIT}` : `${words} WORDS · UNDER ${WORD_LIMIT}`;
+          wordCount.classList.toggle('over', over);
+          shortenText.textContent = over
+            ? `This answer is ${words} words, over the ${WORD_LIMIT}-word target. To shorten it, copy the prompt below, open Claude and paste it there.`
+            : 'Want it even shorter? Copy the prompt below, open Claude and paste it there.';
           result.classList.add('visible');
           result.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
         } catch (error) {
@@ -301,6 +322,15 @@
           submit.disabled = false;
           submit.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m12 3 1.9 5.8L20 11l-6.1 2.2L12 19l-2-5.8L4 11l6-2.2L12 3Z"/><path d="m19 16 .9 2.1L22 19l-2.1.9L19 22l-.9-2.1L16 19l2.1-.9L19 16Z"/></svg> Analyse image';
         }
+      });
+      // Builds the text the user pastes into Claude. The answer is copied to the clipboard, not put in a URL.
+      copyPromptButton.addEventListener('click', async () => {
+        const prompt = `Please shorten the following answer to under ${WORD_LIMIT} words. Keep the key points, and reply with only the shortened answer.\n\n${answer.textContent}`;
+        try {
+          await navigator.clipboard.writeText(prompt);
+          copyPromptButton.textContent = 'Copied. Now paste it into Claude';
+          setTimeout(() => { copyPromptButton.textContent = 'Copy prompt for Claude'; }, 2500);
+        } catch { showMessage('Clipboard access is unavailable in this browser. Select the answer and copy it manually.', 'info'); }
       });
       copyButton.addEventListener('click', async () => {
         try {
