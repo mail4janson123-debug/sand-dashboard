@@ -8,15 +8,17 @@
  *                                    at least one is required. Fallback order: OpenAI -> Gemini -> OpenRouter -> Groq
  *                                    (a provider with no key is simply skipped)
  *   OPENAI_MODEL                     default: gpt-5.4-mini
- *   GEMINI_MODEL                     default: gemini-3.8-flash
- *                                    (if you previously set this to gemini-2.5-flash, update or delete it)
+ *   (Gemini model is hardcoded below as GEMINI_MODEL = 'gemma-4-26b-a4b-it'; the GEMINI_MODEL env var is ignored)
  *   OPENROUTER_MODEL                 default: openrouter/free   (router that picks a free model; it filters for image support)
  *   GROQ_MODEL                       default: qwen/qwen3.8-27b  (a vision-capable model on Groq)
  *   GROQ_REASONING_EFFORT            optional, e.g. none. Only sent if set, because not every model accepts it.
  *   OPENAI_IMAGE_DETAIL              default: auto   (low | auto | high)
  *   OPENAI_REASONING_EFFORT          optional, e.g. minimal/low. Only sent if set, because not every model accepts it.
- *   GEMINI_THINKING_BUDGET           optional number, e.g. 0. Only sent if set, because not every model accepts it.
- *   TOTAL_BUDGET_MS                  default: 45000. Keep this BELOW your Vercel function's maxDuration.
+ *   GEMINI_THINKING_LEVEL            optional, e.g. low or minimal (newer Gemini models). Takes precedence over the budget below.
+ *   GEMINI_THINKING_BUDGET           optional number, e.g. 0 (Gemini 2.5-style models). Only sent if set, because not every model accepts it.
+ *   (Total time budget is hardcoded below as TOTAL_BUDGET_MS = 300000; the TOTAL_BUDGET_MS env var is ignored.
+ *    Keep it BELOW your Vercel function's maxDuration, which is in seconds in vercel.json.)
+ *                                    Each provider gets a fair share of the time left, so one slow provider cannot use it all.
  *   RATE_LIMIT_PER_MIN               default: 6 requests per IP per minute (best effort, see note below)
  *   MAX_CORRECTIONS                  default: 2. Extra text-only calls allowed to fix the word count.
  *   DEBUG_ERRORS                     set to 1 to include error details (provider errors, word counts) in the JSON response
@@ -34,7 +36,9 @@ const MAX_ATTEMPTS = 3;             // per provider call (network errors / 5xx)
 const RETRY_DELAYS_MS = [700, 1600];
 const ATTEMPT_TIMEOUT_MS = 80000;
 const MIN_ATTEMPT_MS = 3000;        // do not start an attempt with less time than this left
-const TOTAL_BUDGET_MS = Number(process.env.TOTAL_BUDGET_MS) || 45000;
+const MIN_PROVIDER_SLICE_MS = 10000; // every provider is offered at least this much time (if the budget allows)
+const TOTAL_BUDGET_MS = 300000;       // hardcoded: 300 seconds for the whole request
+const GEMINI_MODEL = 'gemma-4-26b-a4b-it';  // hardcoded: Gemma 4 26B via the Gemini API
 const RATE_LIMIT_PER_MIN = Number(process.env.RATE_LIMIT_PER_MIN) || 6;
 const OPENAI_MAX_OUTPUT_TOKENS = 800;
 const GEMINI_MAX_OUTPUT_TOKENS = 1000;
@@ -160,13 +164,23 @@ async function fetchWithRetry(url, options, providerName, deadline) {
     }
 
     let response;
+    // AbortSignal.timeout() only accepts whole milliseconds.
+    const timeoutMs = Math.max(1, Math.floor(Math.min(ATTEMPT_TIMEOUT_MS, remaining)));
     try {
       response = await fetch(url, {
         ...options,
-        signal: AbortSignal.timeout(Math.min(ATTEMPT_TIMEOUT_MS, remaining))
+        signal: AbortSignal.timeout(timeoutMs)
       });
     } catch (cause) {
-      lastError = makeError(`${providerName} network/timeout error: ${cause.message}`, { kind: 'timeout', provider: providerName });
+      const timedOut = Boolean(cause) && (cause.name === 'TimeoutError' || cause.name === 'AbortError');
+      lastError = makeError(
+        timedOut
+          ? `${providerName} timed out after ${Math.round(timeoutMs / 1000)}s with no answer`
+          : `${providerName} network error: ${cause && cause.message}`,
+        { kind: 'timeout', provider: providerName }
+      );
+      // A provider that is too slow is skipped, not retried: a retry would only use up the time other providers need.
+      if (timedOut) throw lastError;
       if (attempt === MAX_ATTEMPTS - 1) throw lastError;
       if (!(await waitForRetry(RETRY_DELAYS_MS[attempt] || 1600, deadline))) throw lastError;
       continue;
@@ -246,12 +260,14 @@ async function requestGemini({ image, question, previousAnswer }, ctx) {
     parts.push({ inline_data: { mime_type: `image/${match[1]}`, data: match[2] } });
   }
 
-  const model = (process.env.GEMINI_MODEL || 'gemini-3.8-flash').replace(/^models\//, '');
+  const model = GEMINI_MODEL;
   // The key goes in a header, not the URL, so it does not end up in logs.
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
 
   const generationConfig = { maxOutputTokens: GEMINI_MAX_OUTPUT_TOKENS, temperature: 0.2 };
-  if (process.env.GEMINI_THINKING_BUDGET !== undefined && process.env.GEMINI_THINKING_BUDGET !== '') {
+  if (process.env.GEMINI_THINKING_LEVEL) {
+    generationConfig.thinkingConfig = { thinkingLevel: process.env.GEMINI_THINKING_LEVEL };
+  } else if (process.env.GEMINI_THINKING_BUDGET !== undefined && process.env.GEMINI_THINKING_BUDGET !== '') {
     generationConfig.thinkingConfig = { thinkingBudget: Number(process.env.GEMINI_THINKING_BUDGET) };
   }
 
@@ -382,8 +398,17 @@ async function requestAI(input, ctx, preferred) {
       continue;
     }
 
+    // Fair share of the time left: each provider that has not been tried yet gets an equal slice
+    // (at least MIN_PROVIDER_SLICE_MS), and the last one gets everything that remains.
+    const left = order
+      .slice(order.indexOf(name))
+      .filter((n) => !ctx.errors.has(n) && PROVIDERS[n].getKey()).length;
+    const now = Date.now();
+    const slice = Math.floor(Math.max(MIN_PROVIDER_SLICE_MS, (ctx.deadline - now) / Math.max(1, left)));
+    const providerCtx = { ...ctx, deadline: Math.min(ctx.deadline, now + slice) };
+
     try {
-      const answer = await provider.call(input, ctx);
+      const answer = await provider.call(input, providerCtx);
       return { answer, provider: name };
     } catch (error) {
       error.provider = error.provider || name;
