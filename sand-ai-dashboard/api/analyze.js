@@ -4,16 +4,15 @@
  * Image Q&A handler (Vercel serverless, CommonJS).
  *
  * Environment variables (Vercel -> Project -> Settings -> Environment Variables):
- *   OPENAI_API_KEY, GEMINI_API_KEY, OPENROUTER_API_KEY, GROQ_API_KEY
- *                                    at least one is required. Fallback order: OpenAI -> Gemini -> OpenRouter -> Groq
+ *   CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID   (both are needed for Cloudflare; CLOUDFLARE_API_KEY also works as the token name)
+ *   GEMINI_API_KEY, OPENROUTER_API_KEY, GROQ_API_KEY
+ *                                    at least one provider is required. Fallback order: Cloudflare -> Gemini -> OpenRouter -> Groq
  *                                    (a provider with no key is simply skipped)
- *   OPENAI_MODEL                     default: gpt-5.4-mini
+ *   CLOUDFLARE_MODEL                 default: @cf/meta/llama-4-scout-17b-16e-instruct   (a vision-capable Workers AI model)
  *   (Gemini model is hardcoded below as GEMINI_MODEL = 'gemma-4-26b-a4b-it'; the GEMINI_MODEL env var is ignored)
  *   OPENROUTER_MODEL                 default: openrouter/free   (router that picks a free model; it filters for image support)
  *   GROQ_MODEL                       default: qwen/qwen3.8-27b  (a vision-capable model on Groq)
  *   GROQ_REASONING_EFFORT            optional, e.g. none. Only sent if set, because not every model accepts it.
- *   OPENAI_IMAGE_DETAIL              default: auto   (low | auto | high)
- *   OPENAI_REASONING_EFFORT          optional, e.g. minimal/low. Only sent if set, because not every model accepts it.
  *   GEMINI_THINKING_LEVEL            optional, e.g. low or minimal (newer Gemini models). Takes precedence over the budget below.
  *   GEMINI_THINKING_BUDGET           optional number, e.g. 0 (Gemini 2.5-style models). Only sent if set, because not every model accepts it.
  *   (Total time budget is hardcoded below as TOTAL_BUDGET_MS = 300000; the TOTAL_BUDGET_MS env var is ignored.
@@ -40,11 +39,11 @@ const MIN_PROVIDER_SLICE_MS = 10000; // every provider is offered at least this 
 const TOTAL_BUDGET_MS = 300000;       // hardcoded: 300 seconds for the whole request
 const GEMINI_MODEL = 'gemma-4-26b-a4b-it';  // hardcoded: Gemma 4 26B via the Gemini API
 const RATE_LIMIT_PER_MIN = Number(process.env.RATE_LIMIT_PER_MIN) || 6;
-const OPENAI_MAX_OUTPUT_TOKENS = 800;
+const CLOUDFLARE_MAX_OUTPUT_TOKENS = 1000;
 const GEMINI_MAX_OUTPUT_TOKENS = 1000;
 const OPENROUTER_MAX_OUTPUT_TOKENS = 1000;
 const GROQ_MAX_OUTPUT_TOKENS = 1200;
-const PROVIDER_ORDER = ['OpenAI', 'Gemini', 'OpenRouter', 'Groq'];
+const PROVIDER_ORDER = ['Cloudflare', 'Gemini', 'OpenRouter', 'Groq'];
 
 const RETRYABLE_KINDS = new Set(['rate_limit', 'server', 'transient', 'timeout']);
 const USER_TEMPORARY_KINDS = new Set(['rate_limit', 'server', 'transient', 'timeout', 'empty']);
@@ -92,22 +91,6 @@ function trimToExactWords(text, target) {
   let out = tokens.join(' ').replace(/[\s,;:\-–—(]+$/, '');
   if (!/[.!?…]["'”’)\]]*$/.test(out)) out += '.';
   return out;
-}
-
-function extractOpenAIText(response) {
-  if (typeof response.output_text === 'string' && response.output_text.trim()) {
-    return response.output_text.trim();
-  }
-  const pieces = [];
-  for (const item of response.output || []) {
-    if (item.type !== 'message' || !Array.isArray(item.content)) continue;
-    for (const part of item.content) {
-      if ((part.type === 'output_text' || part.type === 'text') && typeof part.text === 'string') {
-        pieces.push(part.text);
-      }
-    }
-  }
-  return pieces.join('\n').trim();
 }
 
 /* ---------- prompts ---------- */
@@ -189,7 +172,10 @@ async function fetchWithRetry(url, options, providerName, deadline) {
     if (response.ok) return response;
 
     const payload = await response.json().catch(() => ({}));
-    const err = payload && payload.error && typeof payload.error === 'object' ? payload.error : {};
+    // Providers report errors as { error: {...} } (OpenAI style) or { errors: [{...}] } (Cloudflare style).
+    const err = payload && payload.error && typeof payload.error === 'object'
+      ? payload.error
+      : (payload && Array.isArray(payload.errors) && payload.errors[0]) || {};
     const message = err.message || err.status || `${providerName} request failed (${response.status}).`;
     const detail = [err.code, err.type, err.status, message].filter(Boolean).join(' ');
     const kind = classifyHttp(response.status, detail);
@@ -210,44 +196,6 @@ async function fetchWithRetry(url, options, providerName, deadline) {
 }
 
 /* ---------- providers ---------- */
-
-async function requestOpenAI({ image, question, previousAnswer }, ctx) {
-  const content = [{ type: 'input_text', text: getInstructions(question, previousAnswer) }];
-  // The correction pass is text-only: no need to resend (and pay for) the image.
-  if (image) {
-    content.push({
-      type: 'input_image',
-      image_url: image,
-      detail: process.env.OPENAI_IMAGE_DETAIL || 'auto'
-    });
-  }
-
-  const body = {
-    model: process.env.OPENAI_MODEL || 'gpt-5.4-mini',
-    max_output_tokens: OPENAI_MAX_OUTPUT_TOKENS,
-    input: [{ role: 'user', content }]
-  };
-  if (process.env.OPENAI_REASONING_EFFORT) {
-    body.reasoning = { effort: process.env.OPENAI_REASONING_EFFORT };
-  }
-
-  const response = await fetchWithRetry('https://api.openai.com/v1/responses', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify(body)
-  }, 'OpenAI', ctx.deadline);
-
-  const payload = await response.json().catch(() => ({}));
-  const text = extractOpenAIText(payload);
-  if (!text) {
-    const why = payload.incomplete_details?.reason || payload.status || 'no text returned';
-    throw makeError(`OpenAI returned an empty answer (${why}).`, { kind: 'empty', provider: 'OpenAI' });
-  }
-  return text;
-}
 
 async function requestGemini({ image, question, previousAnswer }, ctx) {
   const parts = [{ text: getInstructions(question, previousAnswer) }];
@@ -300,7 +248,7 @@ function stripThinking(text) {
 }
 
 /*
- * Generic OpenAI-compatible Chat Completions call, used by OpenRouter and Groq.
+ * Generic OpenAI-compatible Chat Completions call, used by Cloudflare, OpenRouter and Groq.
  * The correction pass sends no image (text only).
  */
 async function requestChatCompletions({ name, baseUrl, apiKey, model, maxTokens, extraBody, extraHeaders }, { image, question, previousAnswer }, ctx) {
@@ -348,6 +296,26 @@ async function requestChatCompletions({ name, baseUrl, apiKey, model, maxTokens,
   return text;
 }
 
+// Cloudflare Workers AI through its OpenAI-compatible endpoint.
+function getCloudflareToken() {
+  return process.env.CLOUDFLARE_API_TOKEN || process.env.CLOUDFLARE_API_KEY;
+}
+
+function getCloudflareKey() {
+  // Both the token and the account ID are required; without either, the provider is skipped as "not configured".
+  return process.env.CLOUDFLARE_ACCOUNT_ID && getCloudflareToken() ? getCloudflareToken() : '';
+}
+
+function requestCloudflare(input, ctx) {
+  return requestChatCompletions({
+    name: 'Cloudflare',
+    baseUrl: `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(process.env.CLOUDFLARE_ACCOUNT_ID)}/ai/v1`,
+    apiKey: getCloudflareToken(),
+    model: process.env.CLOUDFLARE_MODEL || '@cf/meta/llama-4-scout-17b-16e-instruct',
+    maxTokens: CLOUDFLARE_MAX_OUTPUT_TOKENS
+  }, input, ctx);
+}
+
 function requestOpenRouter(input, ctx) {
   return requestChatCompletions({
     name: 'OpenRouter',
@@ -373,7 +341,7 @@ function requestGroq(input, ctx) {
 }
 
 const PROVIDERS = {
-  OpenAI: { keyLabel: 'OPENAI_API_KEY', getKey: () => process.env.OPENAI_API_KEY, call: requestOpenAI },
+  Cloudflare: { keyLabel: 'CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID', getKey: getCloudflareKey, call: requestCloudflare },
   Gemini: { keyLabel: 'GEMINI_API_KEY', getKey: () => process.env.GEMINI_API_KEY, call: requestGemini },
   OpenRouter: { keyLabel: 'OPENROUTER_API_KEY', getKey: () => process.env.OPENROUTER_API_KEY, call: requestOpenRouter },
   Groq: { keyLabel: 'GROQ_API_KEY', getKey: () => process.env.GROQ_API_KEY, call: requestGroq }
